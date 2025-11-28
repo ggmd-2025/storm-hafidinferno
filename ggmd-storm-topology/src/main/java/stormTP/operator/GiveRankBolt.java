@@ -23,24 +23,24 @@ public class GiveRankBolt implements IRichBolt {
     public void execute(Tuple input) {
         try {
             String raw = input.getStringByField("json");
-            System.out.println("RAW >>> " + raw);
 
-            // ---------- EXTRAIRE runners ---------- //
+            // Extraction du bloc "runners" ou "tortoises"
             int idx = raw.indexOf("\"runners\":[");
+            if (idx < 0) idx = raw.indexOf("\"tortoises\":[");
+            
             if (idx < 0) {
                 collector.ack(input);
                 return;
             }
 
-            int start = idx + 11;
-            int end = raw.lastIndexOf("]");
-            String runnersBlock = raw.substring(start, end);
+            int start = idx + raw.substring(idx).indexOf("[");
+            int end = raw.lastIndexOf("]"); 
+            String runnersBlock = raw.substring(start + 1, end);
 
-            // ---------- EXTRAIRE CHAQUE TORTUE ---------- //
+            // Découpage manuel des objets JSON
             List<String> tortuesJSON = new ArrayList<>();
             StringBuilder current = new StringBuilder();
             int brace = 0;
-
             for (char c : runnersBlock.toCharArray()) {
                 if (c == '{') brace++;
                 if (brace > 0) current.append(c);
@@ -53,9 +53,10 @@ public class GiveRankBolt implements IRichBolt {
                 }
             }
 
-            // ---------- STRUCTURE POUR TRIER ---------- //
+            // Classe interne temporaire
             class Runner {
                 int id, top, total, maxcel, nbCells;
+                String nom; // IMPORTANT : Ajout du champ nom
             }
 
             List<Runner> list = new ArrayList<>();
@@ -66,42 +67,35 @@ public class GiveRankBolt implements IRichBolt {
                 r.top = extractInt(t, "\"top\":");
                 r.total = extractInt(t, "\"total\":");
                 r.maxcel = extractInt(t, "\"maxcel\":");
+                
+                // IMPORTANT : Extraction du nom
+                r.nom = extractString(t, "\"nom\":"); 
 
                 int tour = extractInt(t, "\"tour\":");
                 int cellule = extractInt(t, "\"cellule\":");
-
                 r.nbCells = tour * r.maxcel + cellule;
 
                 list.add(r);
             }
 
-            // ---------- TRIER DECROISSANT ---------- //
+            // Tri décroissant
             list.sort((a, b) -> Integer.compare(b.nbCells, a.nbCells));
 
-            // ---------- CALCULER LES RANGS (CORRECT) ---------- //
+            // Calcul et émission
             int currentRank = 1;
-
             for (int i = 0; i < list.size(); i++) {
-
                 Runner r = list.get(i);
                 String rang;
 
-                // EX-AEQUO
                 if (i > 0 && list.get(i).nbCells == list.get(i - 1).nbCells) {
                     rang = currentRank + "ex";
-                }
-                else {
-                    if (i > 0)
-                        currentRank = i + 1;   // ✅ CORRECTION IMPORTANTE
-
+                } else {
+                    if (i > 0) currentRank = i + 1;
                     rang = String.valueOf(currentRank);
                 }
 
-                // LOG
-                System.out.println("EMIT RANK >>> id=" + r.id + " rang=" + rang + " nbCells=" + r.nbCells);
-
-                // EMISSION VERS Exit3Bolt
-                collector.emit(new Values(r.id, r.top, rang, r.total, r.maxcel));
+                // IMPORTANT : On émet "nom" ici
+                collector.emit(new Values(r.id, r.top, r.nom, rang, r.total, r.maxcel));
             }
 
             collector.ack(input);
@@ -116,24 +110,29 @@ public class GiveRankBolt implements IRichBolt {
         int i = json.indexOf(key);
         if (i < 0) return 0;
         i += key.length();
-
         int j = i;
-        while (j < json.length() && Character.isDigit(json.charAt(j)))
-            j++;
+        while (j < json.length() && (Character.isDigit(json.charAt(j)) || json.charAt(j) == '-')) j++;
+        try { return Integer.parseInt(json.substring(i, j)); } catch(Exception e) { return 0; }
+    }
 
-        return Integer.parseInt(json.substring(i, j));
+    private String extractString(String json, String key) {
+        int i = json.indexOf(key);
+        if (i < 0) return "";
+        i += key.length();
+        if (i < json.length() && json.charAt(i) == '"') i++;
+        int j = json.indexOf('"', i);
+        if (j < 0) return "";
+        return json.substring(i, j);
     }
 
     @Override
     public void declareOutputFields(OutputFieldsDeclarer declarer) {
-        declarer.declare(new Fields("id", "top", "rang", "total", "maxcel"));
+        // IMPORTANT : On déclare le champ "nom" ici
+        declarer.declare(new Fields("id", "top", "nom", "rang", "total", "maxcel"));
     }
 
     @Override
     public void cleanup() {}
-
     @Override
-    public Map<String, Object> getComponentConfiguration() {
-        return null;
-    }
+    public Map<String, Object> getComponentConfiguration() { return null; }
 }
